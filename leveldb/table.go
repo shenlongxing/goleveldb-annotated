@@ -22,7 +22,7 @@ import (
 // tFile holds basic information about a table.
 // tFile记录一个sstable的详细信息
 type tFile struct {
-	fd         storage.FileDesc
+	fd storage.FileDesc
 	// 无效读的阈值，等于文件大小 / 16k，每次无效读都递减1。
 	// 当seekLeft == 0，触发major compaction
 	seekLeft   int32
@@ -184,7 +184,7 @@ func (tf tFiles) overlaps(icmp *iComparer, umin, umax []byte, unsorted bool) boo
 // expanded.
 // The dst content will be overwritten.
 // 根据umin/umax去expand与这个区间有交集的file
-// 
+//
 func (tf tFiles) getOverlaps(dst tFiles, icmp *iComparer, umin, umax []byte, overlapped bool) tFiles {
 	dst = dst[:0]
 	for i := 0; i < len(tf); {
@@ -332,6 +332,7 @@ func (t *tOps) createFrom(src iterator.Iterator) (f *tFile, n int, err error) {
 	}()
 
 	for src.Next() {
+		// kv/meta data写入到sst文件
 		err = w.append(src.Key(), src.Value())
 		if err != nil {
 			return
@@ -492,6 +493,7 @@ func (w *tWriter) append(key, value []byte) error {
 		w.first = append([]byte{}, key...)
 	}
 	w.last = append(w.last[:0], key...)
+	// 把kv跟meta data写入到sst文件
 	return w.tw.Append(key, value)
 }
 
@@ -521,6 +523,7 @@ func (w *tWriter) finish() (f *tFile, err error) {
 			return
 		}
 	}
+	// 写入fd/size/imin/imax/seekLeft
 	f = newTableFile(w.fd, int64(w.tw.BytesLen()), internalKey(w.first), internalKey(w.last))
 	return
 }

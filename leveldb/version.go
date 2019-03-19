@@ -509,6 +509,7 @@ func (p *versionStaging) finish() *version {
 	nv.levels = nv.levels[:n]
 
 	// Compute compaction score for new version.
+	// 计算cScore/clevel
 	nv.computeCompaction()
 
 	return nv

@@ -195,6 +195,10 @@ func (s *session) recover() (err error) {
 }
 
 // Commit session; need external synchronization.
+/*
+ * 1. 将sessionRecord写入manifest
+ * 2. 创建新的version，其中新的version会计算cScore/clevel
+ */
 func (s *session) commit(r *sessionRecord) (err error) {
 	v := s.version()
 	defer v.release()

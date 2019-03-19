@@ -260,10 +260,17 @@ func (db *DB) compactionCommit(name string, rec *sessionRecord) {
 	db.compCommitLk.Lock()
 	defer db.compCommitLk.Unlock() // Defer is necessary.
 	db.compactionTransactFunc(name+"@commit", func(cnt *compactionTransactCounter) error {
+		/*
+		 * commit的内容包含：
+		 * 1. 生成新的version，并计算cScore/clevel
+		 * 2. 将sessionRecore写入manifest
+		 * 3. 将新生成的version设置到session
+		 */
 		return db.s.commit(rec)
 	}, nil)
 }
 
+// minor compaction
 func (db *DB) memCompaction() {
 	mdb := db.getFrozenMem()
 	if mdb == nil {
@@ -286,6 +293,8 @@ func (db *DB) memCompaction() {
 	// 因此当有minor compaction时，先暂停major compaction
 	resumeC := make(chan struct{})
 	select {
+	// 暂停major compaction
+	// TODO：如果没有major compaction，阻塞？
 	case db.tcompPauseC <- (chan<- struct{})(resumeC):
 	case <-db.compPerErrC:
 		close(resumeC)
@@ -301,6 +310,7 @@ func (db *DB) memCompaction() {
 	)
 
 	// Generate tables.
+	// 两个匿名函数的函数实现作为参数
 	db.compactionTransactFunc("memdb@flush", func(cnt *compactionTransactCounter) (err error) {
 		stats.startTimer()
 		// memdbMaxLevel:memtable允许被compaction的最大level，默认为2
@@ -318,11 +328,18 @@ func (db *DB) memCompaction() {
 		return nil
 	})
 
+	// sessionRecord写入wal num
 	rec.setJournalNum(db.journalFd.Num)
+	// sessionRecord写入seq num
 	rec.setSeqNum(db.frozenSeq)
 
 	// Commit.
 	stats.startTimer()
+	// commit session，包含如下动作：
+	/*
+	 * 1.将sessionRecord写入到manifest
+	 * 2.创建新的version
+	 */
 	db.compactionCommit("memdb", rec)
 	stats.stopTimer()
 

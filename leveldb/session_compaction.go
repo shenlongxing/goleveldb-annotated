@@ -24,6 +24,7 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	// Create sorted table.
 	iter := mdb.NewIterator(nil)
 	defer iter.Release()
+	// 将frozen memtable内容写入到sst文件，并追加meta data
 	t, n, err := s.tops.createFrom(iter)
 	if err != nil {
 		return 0, err
@@ -37,7 +38,10 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	// higher level, thus maximum possible level is always picked, while
 	// overlapping deletion marker pushed into lower level.
 	// See: https://github.com/syndtr/goleveldb/issues/127.
+	// TODO
+	// 选择一个level，将frozen table直接推到该level
 	flushLevel := s.pickMemdbLevel(t.imin.ukey(), t.imax.ukey(), maxLevel)
+	// 在sessionRecord中记录在flushLevel中add新文件
 	rec.addTableFile(flushLevel, t)
 
 	s.logf("memdb@flush created L%d@%d N·%d S·%s %q:%q", flushLevel, t.fd.Num, n, shortenb(int(t.size)), t.imin, t.imax)
@@ -52,7 +56,11 @@ func (s *session) pickCompaction() *compaction {
 
 	var sourceLevel int
 	var t0 tFiles
-	if v.cScore >= 1 {
+
+	// 发起compaction的第一步就是查找参与compaction的source层文件
+	// 由于触发compaction有两个条件：(1) 写 (2) 读
+	// 下面的两个分支分别处理上述两个条件
+	if v.cScore >= 1 { // cScore是在生成新的version(也就是compaction)时计算的
 		// cLevel是此次compaction的source level，与最大的cScore一致
 		sourceLevel = v.cLevel
 		// TODO
@@ -73,6 +81,8 @@ func (s *session) pickCompaction() *compaction {
 			t0 = append(t0, tables[0])
 		}
 	} else {
+		// 非cSore>1的场景，则是seekLeft == 0触发
+		// 这种场景下，参与compaction的source层文件就是seekLeft == 0的文件
 		if p := atomic.LoadPointer(&v.cSeek); p != nil {
 			ts := (*tSet)(p)
 			sourceLevel = ts.level
