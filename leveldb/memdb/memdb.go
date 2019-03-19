@@ -180,21 +180,21 @@ const (
 
 // DB is an in-memory key/value database.
 type DB struct {
-	cmp comparer.BasicComparer
-	rnd *rand.Rand
+	cmp comparer.BasicComparer // key的比较器
+	rnd *rand.Rand             // 随机数生成器，产生随机的跳表层高
 
 	mu     sync.RWMutex
-	kvData []byte
+	kvData []byte // 存储key、value的序列化数据
 	// Node data:
 	// [0]         : KV offset
 	// [1]         : Key length
 	// [2]         : Value length
 	// [3]         : Height
 	// [3..height] : Next nodes
-	nodeData  []int
+	nodeData  []int // 存储key、value的索引信息
 	prevNode  [tMaxHeight]int
 	maxHeight int
-	n         int
+	n         int // 键值对的数量
 	kvSize    int
 }
 
@@ -211,26 +211,40 @@ func (p *DB) randHeight() (h int) {
 func (p *DB) findGE(key []byte, prev bool) (int, bool) {
 	node := 0
 	h := p.maxHeight - 1
+	// 这个for循环就是跳表的遍历操作，从最大高度往下
 	for {
-		next := p.nodeData[node+nNext+h]
+		/* const (
+			nKV = iota
+			nKey
+			nVal
+			nHeight
+			nNext
+		  ) */
+		next := p.nodeData[node+nNext+h] // 跳表的最大高度
 		cmp := 1
 		if next != 0 {
 			o := p.nodeData[next]
+			// key与跳表中key的比较
+			// -1	less than
+			// 0	equal to
+			// +1	greater than
 			cmp = p.cmp.Compare(p.kvData[o:o+p.nodeData[next+nKey]], key)
 		}
 		if cmp < 0 {
 			// Keep searching in this list
+			// 当前的key比待插入的key小，跳表往下走
 			node = next
 		} else {
+			// 当前key大于等于目标key，则目标key要么替代该位置，要么得插入在当前key的后面
 			if prev {
 				p.prevNode[h] = node
-			} else if cmp == 0 {
+			} else if cmp == 0 { // 找到相等的key
 				return next, true
 			}
 			if h == 0 {
 				return next, cmp == 0
 			}
-			h--
+			h-- // 跳表层数往下走
 		}
 	}
 }
@@ -278,7 +292,11 @@ func (p *DB) Put(key []byte, value []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// GE：Greater or Equal
+	// 找到第一个大于等于key的node
+	// 找到相同的node，则在同一层的最前插入新node，否则random个new height插入
 	if node, exact := p.findGE(key, true); exact {
+		// 找到大小相等的key，直接插入
 		kvOffset := len(p.kvData)
 		p.kvData = append(p.kvData, key...)
 		p.kvData = append(p.kvData, value...)
@@ -289,8 +307,9 @@ func (p *DB) Put(key []byte, value []byte) error {
 		return nil
 	}
 
+	// 待插入的node，随机生成一个height
 	h := p.randHeight()
-	if h > p.maxHeight {
+	if h > p.maxHeight { // 如果层次大于当前最大，则需要调整当前的层次关系
 		for i := p.maxHeight; i < h; i++ {
 			p.prevNode[i] = 0
 		}
@@ -303,6 +322,7 @@ func (p *DB) Put(key []byte, value []byte) error {
 	// Node
 	node := len(p.nodeData)
 	p.nodeData = append(p.nodeData, kvOffset, len(key), len(value), h)
+	// TODO
 	for i, n := range p.prevNode[:h] {
 		m := n + nNext + i
 		p.nodeData = append(p.nodeData, p.nodeData[m])

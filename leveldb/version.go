@@ -24,15 +24,15 @@ type tSet struct {
 type version struct {
 	s *session
 
-	levels []tFiles
+	levels []tFiles // 各个level的sst文件
 
 	// Level that should be compacted next and its compaction score.
 	// Score < 1 means compaction is not strictly needed. These fields
 	// are initialized by computeCompaction()
-	cLevel int
-	cScore float64
+	cLevel int     // 下一次compaction的level
+	cScore float64 // 各个level最大的cscore值
 
-	cSeek unsafe.Pointer
+	cSeek unsafe.Pointer // TODO
 
 	closing  bool
 	ref      int
@@ -157,6 +157,7 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 
 	// Since entries never hop across level, finding key/value
 	// in smaller level make later levels irrelevant.
+	// 后两个参数是两个匿名函数
 	v.walkOverlapping(aux, ikey, func(level int, t *tFile) bool {
 		if level >= 0 && !tseek {
 			if tset == nil {
@@ -213,7 +214,7 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 		}
 
 		return true
-	}, func(level int) bool {
+	}, func(level int) bool { // TODO，这个level的参数似乎没用到
 		if zfound {
 			switch zkt {
 			case keyTypeVal:
@@ -395,6 +396,7 @@ func (v *version) computeCompaction() {
 	v.s.logf("version@stat F·%v S·%s%v Sc·%v", statFiles, shortenb(int(statTotSize)), statSizes, statScore)
 }
 
+// 当compaction score大于1，需要compaction
 func (v *version) needCompaction() bool {
 	return v.cScore >= 1 || atomic.LoadPointer(&v.cSeek) != nil
 }

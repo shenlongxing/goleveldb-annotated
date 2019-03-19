@@ -29,8 +29,10 @@ func (db *DB) acquireSnapshot() *snapshotElement {
 	db.snapsMu.Lock()
 	defer db.snapsMu.Unlock()
 
+	// 获取最新的seq
 	seq := db.getSeq()
 
+	// 取得snapshot list的最后一个elememt
 	if e := db.snapsList.Back(); e != nil {
 		se := e.Value.(*snapshotElement)
 		if se.seq == seq {
@@ -40,6 +42,7 @@ func (db *DB) acquireSnapshot() *snapshotElement {
 			panic("leveldb: sequence number is not increasing")
 		}
 	}
+	// 如果snapshot list为空，则创建一个新的snapshot并添加到list中
 	se := &snapshotElement{seq: seq, ref: 1}
 	se.e = db.snapsList.PushBack(se)
 	return se

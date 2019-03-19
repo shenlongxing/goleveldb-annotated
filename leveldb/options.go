@@ -35,6 +35,7 @@ func (s *session) setOptions(o *opt.Options) {
 	s.icmp = &iComparer{o.GetComparer()}
 	no.Comparer = s.icmp
 	// Filter.
+	// bloom filter
 	if filter := o.GetFilter(); filter != nil {
 		no.Filter = &iFilter{filter}
 	}
@@ -48,13 +49,15 @@ const optCachedLevel = 7
 type cachedOptions struct {
 	*opt.Options
 
-	compactionExpandLimit []int
-	compactionGPOverlaps  []int
-	compactionSourceLimit []int
-	compactionTableSize   []int
-	compactionTotalSize   []int64
+	// 这几个数组是干啥的 TODO
+	compactionExpandLimit []int   // 说白了就是参与compaction的level+(level+1)层的文件数 * 文件size
+	compactionGPOverlaps  []int   // 与gp层有重叠部分的文件数 * 文件size
+	compactionSourceLimit []int   // 参与compaction的source文件数 * 文件size
+	compactionTableSize   []int   // compaction之后生成的文件size
+	compactionTotalSize   []int64 // compaction的总文件size
 }
 
+// 设置cache option的默认值
 func (co *cachedOptions) cache() {
 	co.compactionExpandLimit = make([]int, optCachedLevel)
 	co.compactionGPOverlaps = make([]int, optCachedLevel)

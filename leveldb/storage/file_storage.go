@@ -104,6 +104,8 @@ func OpenFile(path string, readOnly bool) (Storage, error) {
 		return nil, err
 	}
 
+	// 新创建的db目录，则创建LOCK文件
+	// flock是独占锁，保证同时只有一个db进程
 	flock, err := newFileLock(filepath.Join(path, "LOCK"), readOnly)
 	if err != nil {
 		return nil, err
@@ -119,6 +121,7 @@ func OpenFile(path string, readOnly bool) (Storage, error) {
 		logw    *os.File
 		logSize int64
 	)
+	// open LOG file，没有则创建，并seek到文件末尾
 	if !readOnly {
 		logw, err = os.OpenFile(filepath.Join(path, "LOG"), os.O_WRONLY|os.O_CREATE, 0644)
 		if err != nil {

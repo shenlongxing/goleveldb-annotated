@@ -53,7 +53,7 @@ type DB struct {
 
 	// Snapshot.
 	snapsMu   sync.Mutex
-	snapsList *list.List
+	snapsList *list.List	// TODO：这个list的作用是啥
 
 	// Write.
 	batchPool    sync.Pool
@@ -67,8 +67,10 @@ type DB struct {
 
 	// Compaction.
 	compCommitLk     sync.Mutex
+	// table compaction
 	tcompCmdC        chan cCmd
 	tcompPauseC      chan chan<- struct{}
+	// memtable compaction
 	mcompCmdC        chan cCmd
 	compErrC         chan error
 	compPerErrC      chan error
@@ -122,6 +124,7 @@ func openDB(s *session) (*DB, error) {
 		}
 	} else {
 		// Recover journals.
+		// 根据session，逐个将log文件加载到memtable中，并flush到磁盘
 		if err := db.recoverJournal(); err != nil {
 			return nil, err
 		}
@@ -145,7 +148,9 @@ func openDB(s *session) (*DB, error) {
 	if readOnly {
 		db.SetReadOnly()
 	} else {
+		// TODO
 		db.closeW.Add(2)
+		// 启动后台minor/major compaction协程
 		go db.tCompaction()
 		go db.mCompaction()
 		// go db.jWriter()
@@ -169,6 +174,7 @@ func openDB(s *session) (*DB, error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func Open(stor storage.Storage, o *opt.Options) (db *DB, err error) {
+	// new一个新session，session record用来记录version变更信息
 	s, err := newSession(stor, o)
 	if err != nil {
 		return
@@ -180,6 +186,7 @@ func Open(stor storage.Storage, o *opt.Options) (db *DB, err error) {
 		}
 	}()
 
+	// 遍历CURRENT，找到MANIFEST文件，然后遍历MANIFEST文件的session record恢复version信息
 	err = s.recover()
 	if err != nil {
 		if !os.IsNotExist(err) || s.o.GetErrorIfMissing() || s.o.GetReadOnly() {
@@ -194,6 +201,7 @@ func Open(stor storage.Storage, o *opt.Options) (db *DB, err error) {
 		return
 	}
 
+	// 启动DB
 	return openDB(s)
 }
 
@@ -212,10 +220,13 @@ func Open(stor storage.Storage, o *opt.Options) (db *DB, err error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func OpenFile(path string, o *opt.Options) (db *DB, err error) {
+	// open/创建工作目录，并创建文件锁flock
 	stor, err := storage.OpenFile(path, o.GetReadOnly())
 	if err != nil {
 		return
 	}
+
+	// 启动db
 	db, err = Open(stor, o)
 	if err != nil {
 		stor.Close()
@@ -473,6 +484,7 @@ func recoverTable(s *session, o *opt.Options) error {
 
 func (db *DB) recoverJournal() error {
 	// Get all journals and sort it by file number.
+	// 获取所有的***.log文件，并进行排序
 	rawFds, err := db.s.stor.List(storage.TypeJournal)
 	if err != nil {
 		return err
@@ -480,8 +492,11 @@ func (db *DB) recoverJournal() error {
 	sortFds(rawFds)
 
 	// Journals that will be recovered.
+	// 找到需要进行recover的log文件
+	// 前面的recover操作，已经取得关机前已经flush的log文件
 	var fds []storage.FileDesc
 	for _, fd := range rawFds {
+		// stJournalNum当前的log文件num
 		if fd.Num >= db.s.stJournalNum || fd.Num == db.s.stPrevJournalNum {
 			fds = append(fds, fd)
 		}
@@ -775,6 +790,7 @@ func (db *DB) get(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 		}
 	}
 
+	// 获取当前的version
 	v := db.s.version()
 	value, cSched, err := v.get(auxt, ikey, ro, false)
 	v.release()

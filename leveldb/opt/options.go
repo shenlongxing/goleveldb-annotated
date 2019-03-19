@@ -180,6 +180,8 @@ type Options struct {
 	// This will be multiplied by table size limit at compaction target level.
 	//
 	// The default value is 25.
+	// 用来限制expand之后的compaction的大小
+	// 这是个系数，需要乘以目标层的table size
 	CompactionExpandLimitFactor int
 
 	// CompactionGPOverlapsFactor limits overlaps in grandparent (Level + 2) that a
@@ -187,6 +189,8 @@ type Options struct {
 	// This will be multiplied by table size limit at grandparent level.
 	//
 	// The default value is 10.
+	// 用来限制与level+2层的重叠部分
+	// 这是个系数，需要乘level+2层的table size
 	CompactionGPOverlapsFactor int
 
 	// CompactionL0Trigger defines number of 'sorted table' at level-0 that will
@@ -208,6 +212,8 @@ type Options struct {
 	// The multiplier for each level can also fine-tuned using CompactionTableSizeMultiplierPerLevel.
 	//
 	// The default value is 2MiB.
+	// 这个参数限制compaction生成的sst文件的大小限制
+	// 对于不同level的计算方法是：CompactionTableSize * (CompactionTableSizeMultiplier ^ Level)
 	CompactionTableSize int
 
 	// CompactionTableSizeMultiplier defines multiplier for CompactionTableSize.
@@ -229,6 +235,7 @@ type Options struct {
 	// CompactionTotalSizeMultiplierPerLevel.
 	//
 	// The default value is 10MiB.
+	// 指定每个level的sst文件size
 	CompactionTotalSize int
 
 	// CompactionTotalSizeMultiplier defines multiplier for CompactionTotalSize.
@@ -411,6 +418,8 @@ func (o *Options) GetBlockSize() int {
 	return o.BlockSize
 }
 
+// TODO compaction膨胀的上限
+// level+1 compaction生成的table size * factor(25)
 func (o *Options) GetCompactionExpandLimit(level int) int {
 	factor := DefaultCompactionExpandLimitFactor
 	if o != nil && o.CompactionExpandLimitFactor > 0 {
@@ -442,6 +451,7 @@ func (o *Options) GetCompactionSourceLimit(level int) int {
 	return o.GetCompactionTableSize(level+1) * factor
 }
 
+// 计算compaction之后，生成文件的size
 func (o *Options) GetCompactionTableSize(level int) int {
 	var (
 		base = DefaultCompactionTableSize

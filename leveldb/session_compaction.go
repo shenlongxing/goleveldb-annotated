@@ -45,21 +45,30 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 }
 
 // Pick a compaction based on current state; need external synchronization.
+// 返回一个compaction结构，这个结构表示compaction状态
+// 通过newCompaction，获取到level/level+1层参与compaction的文件
 func (s *session) pickCompaction() *compaction {
 	v := s.version()
 
 	var sourceLevel int
 	var t0 tFiles
 	if v.cScore >= 1 {
+		// cLevel是此次compaction的source level，与最大的cScore一致
 		sourceLevel = v.cLevel
+		// TODO
 		cptr := s.getCompPtr(sourceLevel)
 		tables := v.levels[sourceLevel]
+		// 从cLevel挑选出需要compaction的sst文件
+		// cptr应该是上一次compaction的key
 		for _, t := range tables {
+			// 将第一个key大于上一次compaction key的文件加入到source的compaction队列中
 			if cptr == nil || s.icmp.Compare(t.imax, cptr) > 0 {
 				t0 = append(t0, t)
 				break
 			}
 		}
+
+		// 如果没有符合条件的，则将第一个文件加入到队列
 		if len(t0) == 0 {
 			t0 = append(t0, tables[0])
 		}
@@ -114,13 +123,15 @@ func (s *session) getCompactionRange(sourceLevel int, umin, umax []byte, noLimit
 
 func newCompaction(s *session, v *version, sourceLevel int, t0 tFiles) *compaction {
 	c := &compaction{
-		s:             s,
-		v:             v,
-		sourceLevel:   sourceLevel,
-		levels:        [2]tFiles{t0, nil},
+		s:           s,
+		v:           v,
+		sourceLevel: sourceLevel,
+		levels:      [2]tFiles{t0, nil},
+		// TODO
 		maxGPOverlaps: int64(s.o.GetCompactionGPOverlaps(sourceLevel)),
 		tPtrs:         make([]int, len(v.levels)),
 	}
+	// 根据source level，来expand需要compaction的文件，包含source level和source+1
 	c.expand()
 	c.save()
 	return c
@@ -131,7 +142,8 @@ type compaction struct {
 	s *session
 	v *version
 
-	sourceLevel   int
+	sourceLevel int
+	// 2维数组，第一维是进行compaction的两个level，第二维是每个level参与compaction的文件
 	levels        [2]tFiles
 	maxGPOverlaps int64
 
@@ -172,16 +184,21 @@ func (c *compaction) release() {
 
 // Expand compacted tables; need external synchronization.
 func (c *compaction) expand() {
+	// 参与compaction的文件数的上限
 	limit := int64(c.s.o.GetCompactionExpandLimit(c.sourceLevel))
+	// source level的所有文件
 	vt0 := c.v.levels[c.sourceLevel]
 	vt1 := tFiles{}
 	if level := c.sourceLevel + 1; level < len(c.v.levels) {
+		// sourcelevel + 1的全部文件
 		vt1 = c.v.levels[level]
 	}
 
+	// c.levels是source，source+1层参与compaction的文件
 	t0, t1 := c.levels[0], c.levels[1]
 	imin, imax := t0.getRange(c.s.icmp)
 	// We expand t0 here just incase ukey hop across tables.
+	// 扩展source level参与compaction的文件
 	t0 = vt0.getOverlaps(t0, c.s.icmp, imin.ukey(), imax.ukey(), c.sourceLevel == 0)
 	if len(t0) != len(c.levels[0]) {
 		imin, imax = t0.getRange(c.s.icmp)
@@ -192,6 +209,7 @@ func (c *compaction) expand() {
 
 	// See if we can grow the number of inputs in "sourceLevel" without
 	// changing the number of "sourceLevel+1" files we pick up.
+	// 在不修改level+1的前提下，尽量扩大level层参与compaction的文件数
 	if len(t1) > 0 {
 		exp0 := vt0.getOverlaps(nil, c.s.icmp, amin.ukey(), amax.ukey(), c.sourceLevel == 0)
 		if len(exp0) > len(t0) && t1.size()+exp0.size() < limit {
@@ -210,6 +228,7 @@ func (c *compaction) expand() {
 
 	// Compute the set of grandparent files that overlap this compaction
 	// (parent == sourceLevel+1; grandparent == sourceLevel+2)
+	// level+2层与此次compaction有重叠的文件
 	if level := c.sourceLevel + 2; level < len(c.v.levels) {
 		c.gp = c.v.levels[level].getOverlaps(c.gp, c.s.icmp, amin.ukey(), amax.ukey(), false)
 	}

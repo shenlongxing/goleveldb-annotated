@@ -282,6 +282,8 @@ func (db *DB) memCompaction() {
 	}
 
 	// Pause table compaction.
+	// minor compaction优先级大于major compaction
+	// 因此当有minor compaction时，先暂停major compaction
 	resumeC := make(chan struct{})
 	select {
 	case db.tcompPauseC <- (chan<- struct{})(resumeC):
@@ -301,6 +303,8 @@ func (db *DB) memCompaction() {
 	// Generate tables.
 	db.compactionTransactFunc("memdb@flush", func(cnt *compactionTransactCounter) (err error) {
 		stats.startTimer()
+		// memdbMaxLevel:memtable允许被compaction的最大level，默认为2
+		// 查找compact memtable的合适的level，如何找 TODO？
 		flushLevel, err = db.s.flushMemdb(rec, mdb.DB, db.memdbMaxLevel)
 		stats.stopTimer()
 		return
@@ -333,6 +337,7 @@ func (db *DB) memCompaction() {
 	db.dropFrozenMem()
 
 	// Resume table compaction.
+	// minor compaction完成，恢复major compaction
 	if resumeC != nil {
 		select {
 		case <-resumeC:
@@ -370,6 +375,7 @@ type tableCompactionBuilder struct {
 	tw *tWriter
 }
 
+// 将kv写入到目标sst文件
 func (b *tableCompactionBuilder) appendKV(key, value []byte) error {
 	// Create new table if not already.
 	if b.tw == nil {
@@ -434,8 +440,12 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 	b.stat1.startTimer()
 	defer b.stat1.stopTimer()
 
+	// 将文件一一打开并缓存同时返回对应的iter
 	iter := b.c.newIterator()
 	defer iter.Release()
+
+	// Next每次取的就是当前所有打开文件的最小的key
+	// TODO，具体实现
 	for i := 0; iter.Next(); i++ {
 		// Incr transact counter.
 		cnt.incr()
@@ -511,6 +521,7 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 			b.kerrCnt++
 		}
 
+		// 将kv写入到目标sst文件，如果写满了则flush到磁盘
 		if err := b.appendKV(ikey, iter.Value()); err != nil {
 			return err
 		}
@@ -543,6 +554,8 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 	rec := &sessionRecord{}
 	rec.addCompPtr(c.sourceLevel, c.imax)
 
+	// 如果source层只有一个文件，source+1层没有符合的文件
+	// 且与gp层重复的文件数少于阈值，则直接将source层推到source+1
 	if !noTrivial && c.trivial() {
 		t := c.levels[0][0]
 		db.logf("table@move L%d@%d -> L%d", c.sourceLevel, t.fd.Num, c.sourceLevel+1)
@@ -557,6 +570,7 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 		for _, t := range tables {
 			stats[i].read += t.size
 			// Insert deleted tables into record
+			// sessionRecord中记录本次参与compaction的文件，即删除的文件
 			rec.delTable(c.sourceLevel+i, t.fd.Num)
 		}
 	}
@@ -629,6 +643,8 @@ func (db *DB) tableRangeCompaction(level int, umin, umax []byte) error {
 }
 
 func (db *DB) tableAutoCompaction() {
+	// 获取此次compaction的状态，主要包含：
+	// session/version/level&level+1层中参加compaction的文件/level+2层中overlap的文件
 	if c := db.s.pickCompaction(); c != nil {
 		db.tableCompaction(c, false)
 	}
@@ -705,6 +721,7 @@ func (db *DB) compTriggerWait(compC chan<- cCmd) (err error) {
 	defer close(ch)
 	// Send cmd.
 	select {
+	// 通过向tcompCmdC发送消息，触发auto compaction
 	case compC <- cAuto{ch}:
 	case err = <-db.compErrC:
 		return
@@ -713,6 +730,7 @@ func (db *DB) compTriggerWait(compC chan<- cCmd) (err error) {
 	}
 	// Wait cmd.
 	select {
+	// 等待compaction完成或者异常
 	case err = <-ch:
 	case err = <-db.compErrC:
 	case <-db.closeC:
@@ -758,6 +776,8 @@ func (db *DB) mCompaction() {
 		db.closeW.Done()
 	}()
 
+	// 监听mcompCmdC
+	// mcompCmdC是不带缓冲区的channel，阻塞监听
 	for {
 		select {
 		case x = <-db.mcompCmdC:
@@ -775,6 +795,7 @@ func (db *DB) mCompaction() {
 	}
 }
 
+// major compaction协程
 func (db *DB) tCompaction() {
 	var (
 		x     cCmd
@@ -797,7 +818,9 @@ func (db *DB) tCompaction() {
 		db.closeW.Done()
 	}()
 
+	// 死循环，只在close的时候退出
 	for {
+		// 是否需要执行major compaction(通过检查cScore是否大于1)
 		if db.tableNeedCompaction() {
 			select {
 			case x = <-db.tcompCmdC:
@@ -822,6 +845,7 @@ func (db *DB) tCompaction() {
 				waitQ[i] = nil
 			}
 			waitQ = waitQ[:0]
+			// 没有default，阻塞等待tcompCmdC/tcompPauseC
 			select {
 			case x = <-db.tcompCmdC:
 			case ch := <-db.tcompPauseC:
@@ -834,8 +858,9 @@ func (db *DB) tCompaction() {
 		if x != nil {
 			switch cmd := x.(type) {
 			case cAuto:
-				if cmd.ackC != nil {
+				if cmd.ackC != nil { // TODO
 					// Check the write pause state before caching it.
+					// 从阻塞写中恢复
 					if db.resumeWrite() {
 						x.ack(nil)
 					} else {
@@ -849,6 +874,7 @@ func (db *DB) tCompaction() {
 			}
 			x = nil
 		}
+		// 执行major compaction
 		db.tableAutoCompaction()
 	}
 }

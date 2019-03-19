@@ -44,7 +44,7 @@ type session struct {
 
 	stor     *iStorage
 	storLock storage.Locker
-	o        *cachedOptions
+	o        *cachedOptions // TODO
 	icmp     *iComparer
 	tops     *tOps
 	fileRef  map[int64]int
@@ -53,6 +53,8 @@ type session struct {
 	manifestWriter storage.Writer
 	manifestFd     storage.FileDesc
 
+	// 这个stCompPtrs是每个level一个，存的是internalKey
+	// TODO : 作用是啥，猜测是该level上一次compaction的结束key
 	stCompPtrs []internalKey // compaction pointers; need external synchronization
 	stVersion  *version      // current version
 	vmu        sync.Mutex
@@ -72,6 +74,7 @@ func newSession(stor storage.Storage, o *opt.Options) (s *session, err error) {
 		storLock: storLock,
 		fileRef:  make(map[int64]int),
 	}
+	// 创建新session时，重新计算一把各个option
 	s.setOptions(o)
 	s.tops = newTableOps(s)
 	s.setVersion(newVersion(s))
@@ -116,6 +119,11 @@ func (s *session) recover() (err error) {
 		}
 	}()
 
+	// 查找有效的CURRENT文件，返回fd
+	// CURRENT有三种形式，且优先级依次为：
+	// - CURRENT.[0-9]+ ('pending rename' file, descending order)
+	// - CURRENT
+	// - CURRENT.bak
 	fd, err := s.stor.GetMeta()
 	if err != nil {
 		return

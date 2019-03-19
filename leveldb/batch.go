@@ -66,7 +66,7 @@ func (index batchIndex) kv(data []byte) (key, value []byte) {
 // Batch is a write batch.
 type Batch struct {
 	data  []byte
-	index []batchIndex
+	index []batchIndex // 不同kv的分隔符，相当于offset
 
 	// internalLen is sums of key/value pair length plus 8-bytes internal key.
 	internalLen int
@@ -85,12 +85,25 @@ func (b *Batch) grow(n int) {
 	}
 }
 
+/*
+ * 向batch中append record分三步：
+ * 1. 将kt/keylen/key/valuelen/value写入到data slice中
+ * 2. 搞定batchIndex部分
+ * 3. internalLen，internalLen = keyLen + valueLen + 8
+ *    存储的是internal key，userkey到internal key的转换，需要加8个byte
+ */
 func (b *Batch) appendRec(kt keyType, key, value []byte) {
-	n := 1 + binary.MaxVarintLen32 + len(key)
-	if kt == keyTypeVal {
+	/* batch中的kv的存储在data这个byte slice中，data部分组织如下：
+	|--------------------------------------|--------------------------------------|
+	| kt | keylen | key | valuelen | value | kt | keylen | key | valuelen | value |
+	|--------------------------------------|--------------------------------------|
+	*/
+	n := 1 + binary.MaxVarintLen32 + len(key) // 前三个部分的长度
+	if kt == keyTypeVal {                     // 如果key type是del，则没有value部分
 		n += binary.MaxVarintLen32 + len(value)
 	}
 	b.grow(n)
+	// 搞定batchIndex部分字段
 	index := batchIndex{keyType: kt}
 	o := len(b.data)
 	data := b.data[:o+n]
@@ -108,6 +121,7 @@ func (b *Batch) appendRec(kt keyType, key, value []byte) {
 	}
 	b.data = data[:o]
 	b.index = append(b.index, index)
+	// internalLen 就是 keyLen + valueLen + 8
 	b.internalLen += index.keyLen + index.valueLen + 8
 }
 
@@ -337,9 +351,11 @@ func batchesLen(batches []*Batch) int {
 }
 
 func writeBatchesWithHeader(wr io.Writer, batches []*Batch, seq uint64) error {
+	// 写入header
 	if _, err := wr.Write(encodeBatchHeader(nil, seq, batchesLen(batches))); err != nil {
 		return err
 	}
+	// 写入batch data
 	for _, batch := range batches {
 		if _, err := wr.Write(batch.data); err != nil {
 			return err
