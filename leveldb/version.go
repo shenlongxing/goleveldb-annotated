@@ -84,6 +84,7 @@ func (v *version) release() {
 	v.s.vmu.Unlock()
 }
 
+// 从sst文件中查找key，顺序是level从小到大
 func (v *version) walkOverlapping(aux tFiles, ikey internalKey, f func(level int, t *tFile) bool, lf func(level int) bool) {
 	ukey := ikey.ukey()
 
@@ -103,6 +104,7 @@ func (v *version) walkOverlapping(aux tFiles, ikey internalKey, f func(level int
 	}
 
 	// Walk tables level-by-level.
+	// level从小到大
 	for level, tables := range v.levels {
 		if len(tables) == 0 {
 			continue
@@ -112,7 +114,9 @@ func (v *version) walkOverlapping(aux tFiles, ikey internalKey, f func(level int
 			// Level-0 files may overlap each other. Find all files that
 			// overlap ukey.
 			for _, t := range tables {
+				// 判断ukey是否在sst文件的[imin，imax]范围内
 				if t.overlaps(v.s.icmp, ukey, ukey) {
+					// TODO，没找到则return?? 似乎逻辑不对
 					if !f(level, t) {
 						return
 					}
@@ -171,6 +175,9 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 			fikey, fval []byte
 			ferr        error
 		)
+		// noValue表示不用返回value，类似于exists
+		// find/fineKey类似于skiplist的findGE，找到>=ikey的key
+		// tops: tOps, table operations
 		if noValue {
 			fikey, ferr = v.s.tops.findKey(t, ikey, ro)
 		} else {
@@ -186,10 +193,14 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 			return false
 		}
 
+		// f开头的key，seq这类变量，表示从file中获取的
 		if fukey, fseq, fkt, fkerr := parseInternalKey(fikey); fkerr == nil {
+			// fukey == ukey，表示找到指定key
 			if v.s.icmp.uCompare(ukey, fukey) == 0 {
 				// Level <= 0 may overlaps each-other.
 				if level <= 0 {
+					// 如果是level 0，由于level 0的文件中key可能有重叠
+					// 找到seq最大的，表示是最新的有效数据
 					if fseq >= zseq {
 						zfound = true
 						zseq = fseq
@@ -230,6 +241,7 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 		return true
 	})
 
+	// consumeSeek就是把seekLeft递减
 	if tseek && tset.table.consumeSeek() <= 0 {
 		tcomp = atomic.CompareAndSwapPointer(&v.cSeek, nil, unsafe.Pointer(tset))
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
+// snapshotElement存储在snapshot list的Value字段
 type snapshotElement struct {
 	seq uint64
 	ref int
@@ -25,6 +26,8 @@ type snapshotElement struct {
 }
 
 // Acquires a snapshot, based on latest sequence.
+// 取最新的snapshot，首先从snapshot list中查
+// 如果有seq与db.seq相等的，则返回。否则申请，并加入到snapshot list
 func (db *DB) acquireSnapshot() *snapshotElement {
 	db.snapsMu.Lock()
 	defer db.snapsMu.Unlock()

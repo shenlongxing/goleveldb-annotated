@@ -52,8 +52,11 @@ type DB struct {
 	frozenSeq       uint64
 
 	// Snapshot.
-	snapsMu   sync.Mutex
-	snapsList *list.List	// TODO：这个list的作用是啥
+	snapsMu sync.Mutex
+	// 维护snapshot list的作用是：
+	// 在进行compaction时，如果某个key有多个版本，则使用链表中最小的seq与key的版本做比较
+	// 小于最小的seq的版本都是过期数据，可以drop掉
+	snapsList *list.List
 
 	// Write.
 	batchPool    sync.Pool
@@ -66,10 +69,10 @@ type DB struct {
 	tr           *Transaction
 
 	// Compaction.
-	compCommitLk     sync.Mutex
+	compCommitLk sync.Mutex
 	// table compaction
-	tcompCmdC        chan cCmd
-	tcompPauseC      chan chan<- struct{}
+	tcompCmdC   chan cCmd
+	tcompPauseC chan chan<- struct{}
 	// memtable compaction
 	mcompCmdC        chan cCmd
 	compErrC         chan error
@@ -749,6 +752,8 @@ func (db *DB) recoverJournalRO() error {
 }
 
 func memGet(mdb *memdb.DB, ikey internalKey, icmp *iComparer) (ok bool, mv []byte, err error) {
+	// mem table就是在skiplist中查找，使用findGE
+	// 返回的是第一个 >= ukey的key
 	mk, mv, err := mdb.Find(ikey)
 	if err == nil {
 		ukey, _, kt, kerr := parseInternalKey(mk)
@@ -756,8 +761,9 @@ func memGet(mdb *memdb.DB, ikey internalKey, icmp *iComparer) (ok bool, mv []byt
 			// Shouldn't have had happen.
 			panic(kerr)
 		}
+		// 相同则找到
 		if icmp.uCompare(ukey, ikey.ukey()) == 0 {
-			if kt == keyTypeDel {
+			if kt == keyTypeDel { // key存在，但已删除
 				return true, nil, ErrNotFound
 			}
 			return true, mv, nil
@@ -778,7 +784,9 @@ func (db *DB) get(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 		}
 	}
 
+	// em:memtable   fm:immutable
 	em, fm := db.getMems()
+	// 先memtable，后immutable的查询顺序
 	for _, m := range [...]*memDB{em, fm} {
 		if m == nil {
 			continue
@@ -790,12 +798,14 @@ func (db *DB) get(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 		}
 	}
 
+	// 到这里表示内存中未找到，从sst文件中查询
 	// 获取当前的version
 	v := db.s.version()
 	value, cSched, err := v.get(auxt, ikey, ro, false)
 	v.release()
-	if cSched {
+	if cSched { // cSched = (seekLeft == 0)
 		// Trigger table compaction.
+		// seekLeft为0，表示sst文件的无效读次数达到阈值，触发一次major compaction
 		db.compTrigger(db.tcompCmdC)
 	}
 	return
@@ -856,6 +866,7 @@ func (db *DB) Get(key []byte, ro *opt.ReadOptions) (value []byte, err error) {
 		return
 	}
 
+	// TODO 这里获取snapshot element的必要性，实际只用到了se.seq，其实就是db.seq
 	se := db.acquireSnapshot()
 	defer db.releaseSnapshot(se)
 	return db.get(nil, nil, key, se.seq, ro)
@@ -908,6 +919,18 @@ func (db *DB) NewIterator(slice *util.Range, ro *opt.ReadOptions) iterator.Itera
 // content of snapshot are guaranteed to be consistent.
 //
 // The snapshot must be released after use, by calling Release method.
+// 这是对外提供的获取当前snapshot的接口，用于基于snapshot的get操作，用来实现MVCC
+/*
+ *                  -----------------------------------
+ *                  | seq:12 | key:name | value:wang  |
+ *                  -----------------------------------
+ *                  | seq:11 | key:name | deleted     |
+ *                  -----------------------------------
+ * snapshot(10) ->  | seq:10 | key:name | value:zhang |
+ *                  -----------------------------------
+ * 这里的例子：在seq = 10时，获取了snapshot。随后有两条写命令，对name进行了修改。
+ * 但是基于该snapshot的Get操作，返回的依然是snapshot为10时刻的value，即zhang
+ */
 func (db *DB) GetSnapshot() (*Snapshot, error) {
 	if err := db.ok(); err != nil {
 		return nil, err

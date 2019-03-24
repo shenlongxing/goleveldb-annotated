@@ -386,6 +386,8 @@ func (t *tOps) find(f *tFile, key []byte, ro *opt.ReadOptions) (rkey, rvalue []b
 		return nil, nil, err
 	}
 	defer ch.Release()
+	// 从table文件中查找kv，类似于skiplist的findGE
+	// 找到大于等于指定key的key
 	return ch.Value().(*table.Reader).Find(key, true, ro)
 }
 
