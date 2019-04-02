@@ -35,9 +35,12 @@ type dbIter struct {
 	err        error
 }
 
+// 从kvData中将key/value写入到iterator的key/value的byte数组
 func (i *dbIter) fill(checkStart, checkLimit bool) bool {
 	if i.node != 0 {
+		// n是key的起始offset
 		n := i.p.nodeData[i.node]
+		// m是key的结束offset，也就是kvData[n:m]是key
 		m := n + i.p.nodeData[i.node+nKey]
 		i.key = i.p.kvData[n:m]
 		if i.slice != nil {
@@ -71,11 +74,15 @@ func (i *dbIter) First() bool {
 	i.forward = true
 	i.p.mu.RLock()
 	defer i.p.mu.RUnlock()
+	// 如果指定了slice，则是范围查找
 	if i.slice != nil && i.slice.Start != nil {
 		i.node, _ = i.p.findGE(i.slice.Start, false)
 	} else {
+		// 如果不是指定range的查找，则返回跳表最低level的起始node
+		// nNext指向的是跳表中最低的level
 		i.node = i.p.nodeData[nNext]
 	}
+	// 从kvData中将key/value写入到iterator的key/value的byte数组
 	return i.fill(false, true)
 }
 
@@ -189,9 +196,22 @@ type DB struct {
 	// [0]         : KV offset
 	// [1]         : Key length
 	// [2]         : Value length
-	// [3]         : Height
-	// [3..height] : Next nodes
-	nodeData  []int // 存储key、value的索引信息
+	// [3]         : Height：表示该node的层高
+	// [3..height] : Next nodes，指向h1-h(height)各层的后继结点的指针
+	/* 存储key、value的索引信息，nodeData与kvData的对应关系如下：
+	 * kvData :
+	 *                          -------------------------------------
+	 *                         | key1 | value1 | key2 | value2 | ... |
+	 *                          -------------------------------------
+	 *                                ^                ^
+	 * nodeData:                      |                |
+	 * |-------------------------------------------|-------|----|
+	 * |                       node1               |       |    |
+	 * |-------------------------------------------| node2 | …… |
+	 * | offset | klen | vlen | height=2 | h1 | h2 |       |    |
+	 * |-------------------------------------------|-------|----|
+	 */
+	nodeData  []int
 	prevNode  [tMaxHeight]int
 	maxHeight int
 	n         int // 键值对的数量
@@ -208,19 +228,14 @@ func (p *DB) randHeight() (h int) {
 }
 
 // Must hold RW-lock if prev == true, as it use shared prevNode slice.
+// 从跳表中查找大于等于指定key，并返回TODO
 func (p *DB) findGE(key []byte, prev bool) (int, bool) {
 	node := 0
 	h := p.maxHeight - 1
 	// 这个for循环就是跳表的遍历操作，从最大高度往下
 	for {
-		/* const (
-			nKV = iota
-			nKey
-			nVal
-			nHeight
-			nNext
-		  ) */
-		next := p.nodeData[node+nNext+h] // 跳表的最大高度
+		// 通过nodeData，找到kvData中对应的kv数据
+		next := p.nodeData[node+nNext+h]
 		cmp := 1
 		if next != 0 {
 			o := p.nodeData[next]

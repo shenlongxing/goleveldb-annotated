@@ -866,7 +866,8 @@ func (db *DB) Get(key []byte, ro *opt.ReadOptions) (value []byte, err error) {
 		return
 	}
 
-	// TODO 这里获取snapshot element的必要性，实际只用到了se.seq，其实就是db.seq
+	// 这里获取snapshot element的必要性，实际只用到了se.seq，其实就是db.seq
+	// 必要的，为了保存seq对应的snapshot，
 	se := db.acquireSnapshot()
 	defer db.releaseSnapshot(se)
 	return db.get(nil, nil, key, se.seq, ro)
@@ -902,6 +903,7 @@ func (db *DB) Has(key []byte, ro *opt.ReadOptions) (ret bool, err error) {
 // The iterator must be released after use, by calling Release method.
 //
 // Also read Iterator documentation of the leveldb/iterator package.
+// 生成一个基于db的merged iterator，包含mem/imm/level 0/level N
 func (db *DB) NewIterator(slice *util.Range, ro *opt.ReadOptions) iterator.Iterator {
 	if err := db.ok(); err != nil {
 		return iterator.NewEmptyIterator(err)

@@ -16,8 +16,8 @@ type dir int
 
 const (
 	dirReleased dir = iota - 1
-	dirSOI
-	dirEOI
+	dirSOI          //0，默认值，start of iterator
+	dirEOI          // end of iterator
 	dirBackward
 	dirForward
 )
@@ -27,7 +27,7 @@ type mergedIterator struct {
 	iters  []Iterator
 	strict bool
 
-	keys     [][]byte
+	keys     [][]byte // 根据merged iterator的每个iterator取到的最小key
 	index    int
 	dir      dir
 	err      error
@@ -59,6 +59,9 @@ func (i *mergedIterator) Valid() bool {
 	return i.err == nil && i.dir > dirEOI
 }
 
+// merged iterator的First()方法功能：
+// 1. 调用merged的所有iterator，每个iterator查找其对应的最小key，存到i.keys中
+// 2. 在比较i.keys数组，得到整个DB中最小的key
 func (i *mergedIterator) First() bool {
 	if i.err != nil {
 		return false
@@ -67,9 +70,10 @@ func (i *mergedIterator) First() bool {
 		return false
 	}
 
+	// 遍历各个iterator，每个iterator返回最小的key，存到i.keys的二维数组中
 	for x, iter := range i.iters {
 		switch {
-		case iter.First():
+		case iter.First(): // 对每种不同的iterator，取各个最小的key
 			i.keys[x] = assertKey(iter.Key())
 		case i.iterErr(iter):
 			return false
@@ -78,6 +82,7 @@ func (i *mergedIterator) First() bool {
 		}
 	}
 	i.dir = dirSOI
+	// 比较得到i.keys数组中最小的key
 	return i.next()
 }
 
@@ -144,6 +149,8 @@ func (i *mergedIterator) next() bool {
 	return true
 }
 
+// 这个Next是按照key的顺序，查到当前最小的kv
+// Next会遍历全部的迭代器(mem table/imm/level 0/level N)，取出第一个key进行比较
 func (i *mergedIterator) Next() bool {
 	if i.dir == dirEOI || i.err != nil {
 		return false
@@ -153,7 +160,8 @@ func (i *mergedIterator) Next() bool {
 	}
 
 	switch i.dir {
-	case dirSOI:
+	case dirSOI: // 默认是dirSOI
+		// merged iterator的First()方法查找merged itergator中最小的key
 		return i.First()
 	case dirBackward:
 		key := append([]byte{}, i.keys[i.index]...)
@@ -237,6 +245,7 @@ func (i *mergedIterator) Prev() bool {
 	return i.prev()
 }
 
+// 返回iterator的最小key，index是最小的key的index
 func (i *mergedIterator) Key() []byte {
 	if i.err != nil || i.dir <= dirEOI {
 		return nil
@@ -244,6 +253,7 @@ func (i *mergedIterator) Key() []byte {
 	return i.keys[i.index]
 }
 
+// 根据index得到iterator，再调用相应的Value方法，得到value
 func (i *mergedIterator) Value() []byte {
 	if i.err != nil || i.dir <= dirEOI {
 		return nil

@@ -72,6 +72,7 @@ type Batch struct {
 	internalLen int
 }
 
+/* check batch的data slice长度是否够存kv，不够就扩 */
 func (b *Batch) grow(n int) {
 	o := len(b.data)
 	if cap(b.data)-o < n {
@@ -91,6 +92,7 @@ func (b *Batch) grow(n int) {
  * 2. 搞定batchIndex部分
  * 3. internalLen，internalLen = keyLen + valueLen + 8
  *    存储的是internal key，userkey到internal key的转换，需要加8个byte
+ *    这个8byte，前56 bits存的是seq num，后8 bits是存的key type
  */
 func (b *Batch) appendRec(kt keyType, key, value []byte) {
 	/* batch中的kv的存储在data这个byte slice中，data部分组织如下：
@@ -98,12 +100,19 @@ func (b *Batch) appendRec(kt keyType, key, value []byte) {
 	| kt | keylen | key | valuelen | value | kt | keylen | key | valuelen | value |
 	|--------------------------------------|--------------------------------------|
 	*/
+	// n是一个kv的data部分长度
 	n := 1 + binary.MaxVarintLen32 + len(key) // 前三个部分的长度
 	if kt == keyTypeVal {                     // 如果key type是del，则没有value部分
 		n += binary.MaxVarintLen32 + len(value)
 	}
 	b.grow(n)
-	// 搞定batchIndex部分字段
+	// 搞定batchIndex部分字段,index结构如下
+	/*
+	 * --------------------------------------------
+	 *| kt | keyPos | keyLen | valuePos | valueLen |
+	 * --------------------------------------------
+	 */
+
 	index := batchIndex{keyType: kt}
 	o := len(b.data)
 	data := b.data[:o+n]
@@ -119,6 +128,7 @@ func (b *Batch) appendRec(kt keyType, key, value []byte) {
 		index.valueLen = len(value)
 		o += copy(data[o:], value)
 	}
+	// 将data/index写入到batch中
 	b.data = data[:o]
 	b.index = append(b.index, index)
 	// internalLen 就是 keyLen + valueLen + 8
@@ -229,6 +239,7 @@ func (b *Batch) decode(data []byte, expectedLen int) error {
 func (b *Batch) putMem(seq uint64, mdb *memdb.DB) error {
 	var ik []byte
 	for i, index := range b.index {
+		// 对于batch中的每个kv对，seq是递增的
 		ik = makeInternalKey(ik, index.k(b.data), seq+uint64(i), index.keyType)
 		if err := mdb.Put(ik, index.v(b.data)); err != nil {
 			return err

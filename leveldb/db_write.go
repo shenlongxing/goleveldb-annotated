@@ -100,7 +100,6 @@ retry:
  * 2. 判断当前memtable的剩余空间与待写入的数据量的大小关系
 *     如果剩余 > 待写入的数据量：直接返回剩余的内存大小
       如果剩余 < 待写入的数据量: 触发一次minor compaction，申请新的memtable
-
 */
 func (db *DB) flush(n int) (mdb *memDB, mdbFree int, err error) {
 	delayed := false
@@ -198,7 +197,7 @@ type writeMerge struct {
 
 func (db *DB) unlockWrite(overflow bool, merged int, err error) {
 	for i := 0; i < merged; i++ {
-		// 写失败
+		// 如果有失败，则向AckC中写入err，否则写nil
 		db.writeAckC <- err
 	}
 	if overflow {
@@ -288,8 +287,9 @@ func (db *DB) writeLocked(batch, ourBatch *Batch, merge, sync bool) error {
 					mergeLimit -= internalLen
 				}
 				sync = sync || incoming.sync
-				merged++                // merge的batch的总数量
-				db.writeMergedC <- true // 写writeMergedC，让阻塞等待的待merge的操作返回
+				merged++ // merge的batch的总数量
+				// merge完成，写writeMergedC，让阻塞等待的待merge的操作返回
+				db.writeMergedC <- true
 
 			default:
 				break merge
@@ -320,8 +320,8 @@ func (db *DB) writeLocked(batch, ourBatch *Batch, merge, sync bool) error {
 		if err := batch.putMem(seq, mdb.DB); err != nil {
 			panic(err)
 		}
-		// 更新当前的seq
-		// 注意：从这里可以看出，同一个batch的kv的seqid相同
+		// 更新当前的seq，其实在putMem中对于每个kv对已经进行了递加
+		// 这里为毛不使用指针，这样就不需要这一步的操作
 		seq += uint64(batch.Len())
 	}
 
@@ -330,6 +330,7 @@ func (db *DB) writeLocked(batch, ourBatch *Batch, merge, sync bool) error {
 	db.addSeq(uint64(batchesLen(batches)))
 
 	// Rotate memdb if it's reach the threshold.
+	// TODO，这里为毛是用batch进行判断
 	if batch.internalLen >= mdbFree {
 		// rotate是将memtable转成immutable table
 		db.rotateMem(0, false)
@@ -375,9 +376,11 @@ func (db *DB) Write(batch *Batch, wo *opt.WriteOptions) error {
 	if merge {
 		select {
 		case db.writeMergeC <- writeMerge{sync: sync, batch: batch}:
+			// 阻塞等待被merge
 			if <-db.writeMergedC {
 				// Write is merged.
-				// 阻塞等待merge的结果，如果merge成功则退出，否则继续获取写锁
+				// 到这里表示merge操作已经完成，再阻塞等待写入的结果，返回的error类型
+				// 如果不为nil，表示写失败
 				return <-db.writeAckC
 			}
 			// Write is not merged, the write lock is handed to us. Continue.
@@ -426,9 +429,10 @@ func (db *DB) putRec(kt keyType, key, value []byte, wo *opt.WriteOptions) error 
 		// openDB时进行的初始化：writeMergeC:  make(chan writeMerge)
 		// 可以看出writeMergeC是非缓冲的channel，发送会被阻塞，等待接收完成才返回
 		case db.writeMergeC <- writeMerge{sync: sync, keyType: kt, key: key, value: value}:
-			// 阻塞等待writeMergedC锁
+			// 阻塞等待writeMergedC锁，等到writeMergedC表示merge完成
 			if <-db.writeMergedC {
 				// Write is merged.
+				// merge完成，等待write完成。收到writeAckC之后，写入完成，退出
 				return <-db.writeAckC
 			}
 			// Write is not merged, the write lock is handed to us. Continue.

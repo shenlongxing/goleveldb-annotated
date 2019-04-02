@@ -237,6 +237,8 @@ func (i *indexedIterator) SetErrorCallback(f func(err error)) {
 // won't be ignored and will halt 'indexed iterator', otherwise the iterator will
 // continue to the next 'data iterator'. Corruption on 'index iterator' will not be
 // ignored and will halt the iterator.
+// NewIndexedIterator返回一个'indexed iterator'，这里的index也是一个iterator，
+// 这个迭代器返回一个'data iterator'。'data iterator'是一个存储实际kv对的迭代器。
 func NewIndexedIterator(index IteratorIndexer, strict bool) Iterator {
 	return &indexedIterator{index: index, strict: strict}
 }

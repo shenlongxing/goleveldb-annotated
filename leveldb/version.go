@@ -266,15 +266,20 @@ func (v *version) sampleSeek(ikey internalKey) (tcomp bool) {
 	return
 }
 
+// 对于sst文件，生成两类的iterator
+// 1. level 0文件由于key有重叠，所以每个文件新建一个table iterator
+// 2. level N(N>0)，每个level生成一个indexed的iterator
 func (v *version) getIterators(slice *util.Range, ro *opt.ReadOptions) (its []iterator.Iterator) {
 	strict := opt.GetStrict(v.s.o.Options, ro, opt.StrictReader)
 	for level, tables := range v.levels {
 		if level == 0 {
 			// Merge all level zero files together since they may overlap.
+			// level 0的每个文件生成一个tops(table)类型的iterator
 			for _, t := range tables {
 				its = append(its, v.s.tops.newIterator(t, slice, ro))
 			}
 		} else if len(tables) != 0 {
+			// newIndexIterator生成一个index迭代器，再基于这个index生成一个indexed iterator
 			its = append(its, iterator.NewIndexedIterator(tables.newIndexIterator(v.s.tops, v.s.icmp, slice, ro), strict))
 		}
 	}

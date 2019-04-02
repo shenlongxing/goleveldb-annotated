@@ -232,6 +232,7 @@ func (tf tFiles) getRange(icmp *iComparer) (imin, imax internalKey) {
 }
 
 // Creates iterator index from tables.
+// 创建一个基于table的iterator index
 func (tf tFiles) newIndexIterator(tops *tOps, icmp *iComparer, slice *util.Range, ro *opt.ReadOptions) iterator.IteratorIndexer {
 	if slice != nil {
 		var start, limit int

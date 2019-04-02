@@ -442,6 +442,7 @@ func (b *tableCompactionBuilder) cleanup() {
 	}
 }
 
+// 真正的compaction动作
 func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 	snapResumed := b.snapIter > 0
 	hasLastUkey := b.snapHasLastUkey // The key might has zero length, so this is necessary.

@@ -33,13 +33,17 @@ func (mr *memdbReleaser) Release() {
 	})
 }
 
+// 返回一个merged iterator
 func (db *DB) newRawIterator(auxm *memDB, auxt tFiles, slice *util.Range, ro *opt.ReadOptions) iterator.Iterator {
 	strict := opt.GetStrict(db.s.o.Options, ro, opt.StrictReader)
+	// em->mem table   fm->imm table
 	em, fm := db.getMems()
 	v := db.s.version()
 
 	tableIts := v.getIterators(slice, ro)
-	n := len(tableIts) + len(auxt) + 3
+	// tableIts是sst文件对应的iterator个数
+	// n = tableIts + auxt个数 + mem + imm + auxm
+	n := len(tableIts) + len(auxt) + 3 // 3 = mem + imm + auxm
 	its := make([]iterator.Iterator, 0, n)
 
 	if auxm != nil {
@@ -60,6 +64,7 @@ func (db *DB) newRawIterator(auxm *memDB, auxt tFiles, slice *util.Range, ro *op
 		its = append(its, fmi)
 	}
 	its = append(its, tableIts...)
+	// merged iterator就是把所有的iterator合并到一个slice中
 	mi := iterator.NewMergedIterator(its, db.s.icmp, strict)
 	mi.SetReleaser(&versionReleaser{v: v})
 	return mi
