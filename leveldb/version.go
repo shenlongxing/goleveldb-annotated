@@ -85,6 +85,7 @@ func (v *version) release() {
 }
 
 // 从sst文件中查找key，顺序是level从小到大
+// 使用的是闭包，第一个匿名函数返回的是单个文件的查找结果
 func (v *version) walkOverlapping(aux tFiles, ikey internalKey, f func(level int, t *tFile) bool, lf func(level int) bool) {
 	ukey := ikey.ukey()
 
@@ -113,19 +114,33 @@ func (v *version) walkOverlapping(aux tFiles, ikey internalKey, f func(level int
 		if level == 0 {
 			// Level-0 files may overlap each other. Find all files that
 			// overlap ukey.
+			/*
+			 * level 0存在overlap，所以需要遍历全部文件
+			 * 不管当前文件是否找到，都会继续后面的查找，一直到查完全部文件为止
+			 */
 			for _, t := range tables {
 				// 判断ukey是否在sst文件的[imin，imax]范围内
 				if t.overlaps(v.s.icmp, ukey, ukey) {
-					// TODO，没找到则return?? 似乎逻辑不对
+					// 文件查找中，找到/没找到返回的都是true，只有异常才返回false
+					// 也就是说一旦某个文件查找异常，则退出
 					if !f(level, t) {
 						return
 					}
 				}
 			}
 		} else {
+			// 对于level>0的情况，key只可能存在一个文件中，因此这里的查找逻辑与level 0也不同。
+			// 只需要查找到范围包含key的文件即可。例如各文件的key范围如下：
+			// [0,200],[201,400],[401,600],[601,800],[801,+∞]   待查找的ukey为500
+			// 此时，imax大于ukey的有3个，但是只需要找到“最小”的即可，因为ukey只可能在这个文件中
+			// searchMax实现的就是查找这个“最小”文件的功能
 			if i := tables.searchMax(v.s.icmp, ikey); i < len(tables) {
 				t := tables[i]
+				// 检查ukey是不是大于文件的min key，是的话表示ukey在[imin,imax]范围内
 				if v.s.icmp.uCompare(ukey, t.imin.ukey()) >= 0 {
+					// 注意：f()闭包中，对于level<=0和level>0的返回值规则是不同的
+					// 对于level<=0，只有查找异常才会返回false，也就是只有查找异常才会退出
+					// 但是level>0的场景，找到了返回false，也就是找到就直接返回
 					if !f(level, t) {
 						return
 					}
@@ -133,6 +148,9 @@ func (v *version) walkOverlapping(aux tFiles, ikey internalKey, f func(level int
 			}
 		}
 
+		// lf这个闭包的作用是判断level 0是否已经找到了，找到则直接返回
+		// 因此看起来放这里是不合适的，直接放level == 0的条件下即可
+		// TODO
 		if lf != nil && !lf(level) {
 			return
 		}
@@ -147,11 +165,12 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 	ukey := ikey.ukey()
 
 	var (
-		tset  *tSet
+		tset  *tSet // tset包含level和tFile
 		tseek bool
 
 		// Level-0.
-		zfound bool
+		// 记录level中各个文件的查找情况，确保找到最新的kv
+		zfound bool // 表示在level 0查找到了
 		zseq   uint64
 		zkt    keyType
 		zval   []byte
@@ -161,11 +180,18 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 
 	// Since entries never hop across level, finding key/value
 	// in smaller level make later levels irrelevant.
-	// 后两个参数是两个匿名函数
+	// walkOverlapping是查询全部level，其中后两个参数都是匿名函数构成的闭包
+	// 第一个参数是实现在单个文件中查询，并将结果记录到fikey, fval中
+	// 第二个匿名函数的作用是：
+
+	// 注意：f()闭包中，对于level<=0和level>0的返回值规则是不同的
+	// 对于level<=0，只有查找异常才会返回false，也就是只有查找异常才会退出
+	// 但是level>0的场景，找到了返回false，也就是找到就直接返回
 	v.walkOverlapping(aux, ikey, func(level int, t *tFile) bool {
+		// TODO
 		if level >= 0 && !tseek {
 			if tset == nil {
-				tset = &tSet{level, t}
+				tset = &tSet{level, t} // 第一次进入到闭包时，设置tset
 			} else {
 				tseek = true
 			}
@@ -243,6 +269,8 @@ func (v *version) get(aux tFiles, ikey internalKey, ro *opt.ReadOptions, noValue
 
 	// consumeSeek就是把seekLeft递减
 	if tseek && tset.table.consumeSeek() <= 0 {
+		// tset中记录的是待执行compaction的文件信息：level+文件number
+		// 并将是否需要执行compaction的结果给tcomp，并返回
 		tcomp = atomic.CompareAndSwapPointer(&v.cSeek, nil, unsafe.Pointer(tset))
 	}
 

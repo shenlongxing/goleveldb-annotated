@@ -107,6 +107,7 @@ func (b *mBucket) get(r *Cache, h *mNode, hash uint32, ns, key uint64, noset boo
 		return true, false, nil
 	}
 
+	// bucket中没找到，且设置了set函数，则新建node加入到bucket链表末尾
 	// Create node.
 	n = &Node{
 		r:    r,
@@ -121,6 +122,7 @@ func (b *mBucket) get(r *Cache, h *mNode, hash uint32, ns, key uint64, noset boo
 	b.mu.Unlock()
 
 	// Update counter.
+	// 判断新的node数是否达到了阈值，是的话则进行expand，详细过程TODO
 	grow := atomic.AddInt32(&r.nodes, 1) >= h.growThreshold
 	if bLen > mOverflowThreshold {
 		grow = grow || atomic.AddInt32(&h.overflow, 1) >= mOverflowGrowThreshold
@@ -313,9 +315,12 @@ func NewCache(cacher Cacher) *Cache {
 	return r
 }
 
+/* 输入hash值，返回dict的指针和bucket的指针 */
 func (r *Cache) getBucket(hash uint32) (*mNode, *mBucket) {
 	h := (*mNode)(atomic.LoadPointer(&r.mHead))
+	// hash值与mask按位与，得到bucket的index
 	i := hash & h.mask
+	// b是bucket的指针
 	b := (*mBucket)(atomic.LoadPointer(&h.buckets[i]))
 	if b == nil {
 		b = h.initBucket(i)
@@ -364,6 +369,7 @@ func (r *Cache) SetCapacity(capacity int) {
 //
 // The returned 'cache handle' should be released after use by calling Release
 // method.
+// Get是使用key(这里的key指的是文件号)从cache中查找相应的cache node，如果没有则使用setFunc将其加入到cache中
 func (r *Cache) Get(ns, key uint64, setFunc func() (size int, value Value)) *Handle {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -372,19 +378,28 @@ func (r *Cache) Get(ns, key uint64, setFunc func() (size int, value Value)) *Han
 	}
 
 	hash := murmur32(ns, key, 0xf00)
+	/*
+	 * 使用hash值查找，这里使用for循环的原因：
+	 * 在从dict查找过程中，dict有可能在执行expand/shrink，此时dict出于frozen状态
+	 * 此时dict无法进行读写，所以使用for循环再次执行，正常状态下一次查找就会break
+	 */
 	for {
+		// 使用hash值查找对应的dict指针和bucket指针
 		h, b := r.getBucket(hash)
+		// 从bucket中查找，返回值分别是：done(完成), added(新增node), Node
+		// 只有dict出于frozen状态时，done才是false
 		done, _, n := b.get(r, h, hash, ns, key, setFunc == nil)
 		if done {
 			if n != nil {
 				n.mu.Lock()
-				if n.value == nil {
+				if n.value == nil { // 新创建的node
 					if setFunc == nil {
 						n.mu.Unlock()
 						n.unref()
 						return nil
 					}
 
+					// 对于新的cache node，使用setFunc open文件将meta data保存到cache node
 					n.size, n.value = setFunc()
 					if n.value == nil {
 						n.size = 0
@@ -396,6 +411,7 @@ func (r *Cache) Get(ns, key uint64, setFunc func() (size int, value Value)) *Han
 				}
 				n.mu.Unlock()
 				if r.cacher != nil {
+					// 将访问的node挪到LRU双向链表的头部，也就是LRU的实现
 					r.cacher.Promote(n)
 				}
 				return &Handle{unsafe.Pointer(n)}
@@ -577,7 +593,7 @@ type Node struct {
 
 	mu    sync.Mutex
 	size  int
-	value Value
+	value Value // cache node
 
 	ref   int32
 	onDel []func()
@@ -640,6 +656,7 @@ type Handle struct {
 }
 
 // Value returns the value of the 'cache node'.
+// 返回一个cache node
 func (h *Handle) Value() Value {
 	n := (*Node)(atomic.LoadPointer(&h.n))
 	if n != nil {

@@ -299,8 +299,8 @@ type tOps struct {
 	s            *session
 	noSync       bool
 	evictRemoved bool
-	cache        *cache.Cache
-	bcache       *cache.Cache
+	cache        *cache.Cache // table cache，缓存打开的文件的文件句柄与meta data(默认上限500个)
+	bcache       *cache.Cache // block cache，缓存被读过的sstable的data block(默认上限8MB)
 	bpool        *util.BufferPool
 }
 
@@ -352,6 +352,8 @@ func (t *tOps) createFrom(src iterator.Iterator) (f *tFile, n int, err error) {
 // Opens table. It returns a cache handle, which should
 // be released after use.
 func (t *tOps) open(f *tFile) (ch *cache.Handle, err error) {
+	// 使用sst的文件号，从table cache中获取一个cache node
+	// 实现是：从cache中查找，如果有直接返回，否则新建一个node加入到cache中
 	ch = t.cache.Get(0, uint64(f.fd.Num), func() (size int, value cache.Value) {
 		var r storage.Reader
 		r, err = t.s.stor.Open(f.fd)
@@ -365,6 +367,7 @@ func (t *tOps) open(f *tFile) (ch *cache.Handle, err error) {
 		}
 
 		var tr *table.Reader
+		// open文件，读入文件meta data
 		tr, err = table.NewReader(r, f.size, f.fd, bcache, t.bpool, t.s.o.Options)
 		if err != nil {
 			r.Close()
@@ -382,13 +385,15 @@ func (t *tOps) open(f *tFile) (ch *cache.Handle, err error) {
 // Finds key/value pair whose key is greater than or equal to the
 // given key.
 func (t *tOps) find(f *tFile, key []byte, ro *opt.ReadOptions) (rkey, rvalue []byte, err error) {
+	// open文件，返回一个table cache的node
+	// 其中：如果block cache中没有文件对应的cache node，则新建并加入到链表的头部
+	// 并将文件的meta data写入到node中
 	ch, err := t.open(f)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer ch.Release()
-	// 从table文件中查找kv，类似于skiplist的findGE
-	// 找到大于等于指定key的key
+	// 从table文件中查找kv
 	return ch.Value().(*table.Reader).Find(key, true, ro)
 }
 
