@@ -24,7 +24,7 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	// Create sorted table.
 	iter := mdb.NewIterator(nil)
 	defer iter.Release()
-	// 将frozen memtable内容写入到sst文件，并追加meta data
+	// 使用iterator，将kv/meta data写入sst文件，并创建tFile，记录fd/size/imin/imax/seekLeft
 	t, n, err := s.tops.createFrom(iter)
 	if err != nil {
 		return 0, err
@@ -38,8 +38,8 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	// higher level, thus maximum possible level is always picked, while
 	// overlapping deletion marker pushed into lower level.
 	// See: https://github.com/syndtr/goleveldb/issues/127.
-	// TODO
 	// 选择一个level，将frozen table直接推到该level
+	// 现在不支持往高level推，原因见注释
 	flushLevel := s.pickMemdbLevel(t.imin.ukey(), t.imax.ukey(), maxLevel)
 	// 在sessionRecord中记录在flushLevel中add新文件
 	rec.addTableFile(flushLevel, t)

@@ -313,8 +313,8 @@ func (db *DB) memCompaction() {
 	// 两个匿名函数的函数实现作为参数
 	db.compactionTransactFunc("memdb@flush", func(cnt *compactionTransactCounter) (err error) {
 		stats.startTimer()
-		// memdbMaxLevel:memtable允许被compaction的最大level，默认为2
-		// 查找compact memtable的合适的level，如何找 TODO？
+		// 选择mem compaction推送的level，并在session record中记录新增的文件信息
+		// memdbMaxLevel:memtable允许被compaction的最大level，目前不支持此功能，只能compaction为level 0
 		flushLevel, err = db.s.flushMemdb(rec, mdb.DB, db.memdbMaxLevel)
 		stats.stopTimer()
 		return
@@ -339,6 +339,7 @@ func (db *DB) memCompaction() {
 	/*
 	 * 1.将sessionRecord写入到manifest
 	 * 2.创建新的version
+	 * 3.将current version设置为新建的version
 	 */
 	db.compactionCommit("memdb", rec)
 	stats.stopTimer()
@@ -351,6 +352,7 @@ func (db *DB) memCompaction() {
 	db.compStats.addStat(flushLevel, stats)
 
 	// Drop frozen memdb.
+	// 删除imm table
 	db.dropFrozenMem()
 
 	// Resume table compaction.

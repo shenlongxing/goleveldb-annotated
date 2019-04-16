@@ -374,12 +374,14 @@ func (v *version) pickMemdbLevel(umin, umax []byte, maxLevel int) (level int) {
 		if len(v.levels) == 0 {
 			return maxLevel
 		}
+		/* 新生成的sst文件与当前level 0的文件是否有overlap */
 		if !v.levels[0].overlaps(v.s.icmp, umin, umax, true) {
 			var overlaps tFiles
 			for ; level < maxLevel; level++ {
 				if pLevel := level + 1; pLevel >= len(v.levels) {
 					return maxLevel
 				} else if v.levels[pLevel].overlaps(v.s.icmp, umin, umax, false) {
+					/* overlap则直接返回 */
 					break
 				}
 				if gpLevel := level + 2; gpLevel < len(v.levels) {

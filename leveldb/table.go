@@ -155,6 +155,7 @@ func (tf tFiles) searchMax(icmp *iComparer, ikey internalKey) int {
 
 // Returns true if given key range overlaps with one or more
 // tables key range. If unsorted is true then binary search will not be used.
+// check指定level文件与[umin,umax]是否存在overlap，是返回true，否则false
 func (tf tFiles) overlaps(icmp *iComparer, umin, umax []byte, unsorted bool) bool {
 	if unsorted {
 		// Check against all files.
