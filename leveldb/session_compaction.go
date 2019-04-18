@@ -82,7 +82,7 @@ func (s *session) pickCompaction() *compaction {
 		}
 	} else {
 		// 非cSore>1的场景，则是seekLeft == 0触发
-		// 这种场景下，参与compaction的source层文件就是seekLeft == 0的文件
+		// 这种场景下，参与compaction的source层文件就是seekLeft == 0的文件，记录在cSeek中
 		if p := atomic.LoadPointer(&v.cSeek); p != nil {
 			ts := (*tSet)(p)
 			sourceLevel = ts.level
@@ -193,6 +193,7 @@ func (c *compaction) release() {
 }
 
 // Expand compacted tables; need external synchronization.
+// 基于source level的待compaction文件进行expand，查找参加compaction的文件
 func (c *compaction) expand() {
 	// 参与compaction的文件数的上限
 	limit := int64(c.s.o.GetCompactionExpandLimit(c.sourceLevel))
@@ -206,20 +207,49 @@ func (c *compaction) expand() {
 
 	// c.levels是source，source+1层参与compaction的文件
 	t0, t1 := c.levels[0], c.levels[1]
+	// compaction源文件的[imin, imax]
 	imin, imax := t0.getRange(c.s.icmp)
 	// We expand t0 here just incase ukey hop across tables.
-	// 扩展source level参与compaction的文件
+	// 扩展source level参与compaction的文件,原则很简单，就是查找与source文件的[imin, imax]有overlap的文件
 	t0 = vt0.getOverlaps(t0, c.s.icmp, imin.ukey(), imax.ukey(), c.sourceLevel == 0)
 	if len(t0) != len(c.levels[0]) {
+		// 更新imin,imax
 		imin, imax = t0.getRange(c.s.icmp)
 	}
+	// 使用imin,imax去level+1层查找overlap的文件
 	t1 = vt1.getOverlaps(t1, c.s.icmp, imin.ukey(), imax.ukey(), false)
 	// Get entire range covered by compaction.
+	// level N/level N+1的[min,max]并集
 	amin, amax := append(t0, t1...).getRange(c.s.icmp)
 
 	// See if we can grow the number of inputs in "sourceLevel" without
 	// changing the number of "sourceLevel+1" files we pick up.
-	// 在不修改level+1的前提下，尽量扩大level层参与compaction的文件数
+	// 在不修改level+1的前提下，尽量扩大level层参与compaction的文件数，这么处理的原因是：
+	/*
+                        a        b         c       d
+      source level   <-----><--------><--------><------>
+                       A    B     C    D     E     F
+      level +1       <---><---><----><----><----><---->
+      上面的例子中，比如发起compaction的源文件是b，查找compaction文件的流程如下：
+      1. 在source层进行expand，由于不是level 0，不存在overlap。结果还是b
+      2. 使用b文件的key范围[min,max]到level+1层进行比较，得到overlap的文件B、C、D
+      3. 此时b、B、C、D文件为compaction的输入文件
+
+      但是还有另外一种情况：
+                        a      b         c       d
+      source level   <---><--------><--------><------>
+                         A      B     C    D     E
+      level +1       <-------><----><----><----><---->
+      这种情况下的compaction流程为：
+      1. 在source层进行expand，由于不是level 0，不存在overlap。结果还是b
+      2. 使用b文件的key范围[min,max]到level+1层进行比较，得到overlap的文件A、B
+      3. 这时候compaction的输入文件是否就是b、A、B了呢？观察一下可以发现，source level的a文件
+         key的范围完全在A+B范围内。这时候把a进入到compaction的目标文件，完全不会影响level+1的key的范围
+      4. 因此，原则上：在不修改level+1的前提下，尽量扩大level层参与compaction的文件数
+
+      在第一个例子中，能不能把与B、C、D有overlap的a加进来呢？答案是否定的。因为leveldb中，除了level 0
+      以外，其他level不能存在key的overlap。如果把a加入到compaction的源文件，生成的结果文件会与A存在overlap。
+	*/
 	if len(t1) > 0 {
 		exp0 := vt0.getOverlaps(nil, c.s.icmp, amin.ukey(), amax.ukey(), c.sourceLevel == 0)
 		if len(exp0) > len(t0) && t1.size()+exp0.size() < limit {

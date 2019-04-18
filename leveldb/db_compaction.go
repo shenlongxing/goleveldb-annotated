@@ -444,7 +444,7 @@ func (b *tableCompactionBuilder) cleanup() {
 	}
 }
 
-// 真正的compaction动作
+// 真正的compaction动作，实质上就是个归并compaction的过程
 func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 	snapResumed := b.snapIter > 0
 	hasLastUkey := b.snapHasLastUkey // The key might has zero length, so this is necessary.
@@ -572,6 +572,7 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 	defer c.release()
 
 	rec := &sessionRecord{}
+	// 记录source level参与compaction的max key
 	rec.addCompPtr(c.sourceLevel, c.imax)
 
 	// 如果source层只有一个文件，source+1层没有符合的文件
@@ -594,7 +595,9 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 			rec.delTable(c.sourceLevel+i, t.fd.Num)
 		}
 	}
+	// 参与compaction的文件size和
 	sourceSize := int(stats[0].read + stats[1].read)
+	// 通过snapshot list，查找存在的最小的seq
 	minSeq := db.minSeq()
 	db.logf("table@compaction L%d·%d -> L%d·%d S·%s Q·%d", c.sourceLevel, len(c.levels[0]), c.sourceLevel+1, len(c.levels[1]), shortenb(sourceSize), minSeq)
 
@@ -608,10 +611,15 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 		strict:    db.s.o.GetStrict(opt.StrictCompaction),
 		tableSize: db.s.o.GetCompactionTableSize(c.sourceLevel + 1),
 	}
+	// 真正的compaction动作
 	db.compactionTransact("table@build", b)
 
 	// Commit.
 	stats[1].startTimer()
+	// commit compaction，也就是：
+	// 1. 生成新的ersion，并计算cSocore、cLevel
+	// 2. 将sessionRecord写入manifest
+	// 3. 并将current version设置为新的version
 	db.compactionCommit("table", rec)
 	stats[1].stopTimer()
 
@@ -852,6 +860,7 @@ func (db *DB) tCompaction() {
 			default:
 			}
 			// Resume write operation as soon as possible.
+
 			if len(waitQ) > 0 && db.resumeWrite() {
 				for i := range waitQ {
 					waitQ[i].ack(nil)
